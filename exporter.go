@@ -24,6 +24,7 @@ import (
 // WmiCollector implements the prometheus.Collector interface.
 type WmiCollector struct {
 	collectors map[string]collector.Collector
+	timeout    time.Duration
 }
 
 const (
@@ -42,6 +43,12 @@ var (
 	scrapeSuccessDesc = prometheus.NewDesc(
 		prometheus.BuildFQName(collector.Namespace, "exporter", "collector_success"),
 		"wmi_exporter: Whether the collector was successful.",
+		[]string{"collector"},
+		nil,
+	)
+	scrapeTimeoutDesc = prometheus.NewDesc(
+		prometheus.BuildFQName(collector.Namespace, "exporter", "collector_timeout"),
+		"wmi_exporter: 1 if the collector timed out, 0 otherwise.",
 		[]string{"collector"},
 		nil,
 	)
@@ -72,7 +79,7 @@ func (coll WmiCollector) Collect(ch chan<- prometheus.Metric) {
 	wg.Add(len(coll.collectors))
 	for name, c := range coll.collectors {
 		go func(name string, c collector.Collector) {
-			execute(name, c, ch)
+			execute(name, c, ch, coll.timeout)
 			wg.Done()
 		}(name, c)
 	}
@@ -96,19 +103,36 @@ func filterAvailableCollectors(collectors string) string {
 	return strings.Join(availableCollectors, ",")
 }
 
-func execute(name string, c collector.Collector, ch chan<- prometheus.Metric) {
-	begin := time.Now()
-	err := c.Collect(ch)
-	duration := time.Since(begin)
-	var success float64
+func execute(name string, c collector.Collector, ch chan<- prometheus.Metric, maxCollectTime time.Duration) {
+	var success, scrapeTimeout float64
+	var duration time.Duration
 
-	if err != nil {
-		log.Errorf("collector %s failed after %fs: %s", name, duration.Seconds(), err)
+	begin := time.Now()
+	timer := time.NewTimer(maxCollectTime)
+	defer timer.Stop()
+
+	result := make(chan error, 1)
+	go func() {
+		result <- c.Collect(ch)
+	}()
+	select {
+	case err := <-result:
+		duration = time.Since(begin)
+		if err != nil {
+			log.Errorf("collector %s failed after %fs: %s", name, duration.Seconds(), err)
+			success = 0
+		} else {
+			log.Debugf("collector %s succeeded after %fs.", name, duration.Seconds())
+			success = 1
+		}
+
+	case <-timer.C:
+		duration = maxCollectTime
+		log.Errorf("collector %s timed out after %fs", name, duration.Seconds())
 		success = 0
-	} else {
-		log.Debugf("collector %s succeeded after %fs.", name, duration.Seconds())
-		success = 1
+		scrapeTimeout = 1
 	}
+
 	ch <- prometheus.MustNewConstMetric(
 		scrapeDurationDesc,
 		prometheus.GaugeValue,
@@ -119,6 +143,12 @@ func execute(name string, c collector.Collector, ch chan<- prometheus.Metric) {
 		scrapeSuccessDesc,
 		prometheus.GaugeValue,
 		success,
+		name,
+	)
+	ch <- prometheus.MustNewConstMetric(
+		scrapeTimeoutDesc,
+		prometheus.GaugeValue,
+		scrapeTimeout,
 		name,
 	)
 }
@@ -186,8 +216,12 @@ func main() {
 		).Default("/metrics").String()
 		enabledCollectors = kingpin.Flag(
 			"collectors.enabled",
-			"Comma-separated list of collectors to use. Use '[defaults]' as a placeholder for all the collectors enabled by default.").
-			Default(filterAvailableCollectors(defaultCollectors)).String()
+			"Comma-separated list of collectors to use. Use '[defaults]' as a placeholder for all the collectors enabled by default.",
+		).Default(filterAvailableCollectors(defaultCollectors)).String()
+		collectorTimeout = kingpin.Flag(
+			"collectors.timeout",
+			"Max duration a collector can run until it is aborted",
+		).Default("1m").Duration()
 		printCollectors = kingpin.Flag(
 			"collectors.print",
 			"If true, print available collectors and exit.",
@@ -236,8 +270,8 @@ func main() {
 
 	log.Infof("Enabled collectors: %v", strings.Join(keys(collectors), ", "))
 
-	nodeCollector := WmiCollector{collectors: collectors}
-	prometheus.MustRegister(nodeCollector)
+	wmiCollector := WmiCollector{collectors: collectors, timeout: *collectorTimeout}
+	prometheus.MustRegister(wmiCollector)
 
 	http.Handle(*metricsPath, promhttp.Handler())
 	http.HandleFunc("/health", healthCheck)
