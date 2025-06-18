@@ -1,0 +1,81 @@
+Intended Value & Expected Outcome
+	•	Goal:
+Automate the onboarding of MongoDB cluster metrics from Ops Manager into Grafana Cloud using Prometheus-compatible endpoints and secure ingestion pipelines.
+	•	Value:
+Reduces manual effort in metrics integration, ensures consistent observability coverage across MongoDB clusters, and aligns with modern telemetry stack adoption. Supports faster troubleshooting and capacity planning.
+	•	Outcome:
+MongoDB performance metrics (e.g., memory, connections, replication lag, disk usage) are collected through Ops Manager Prometheus exporter, transformed if needed, and pushed to Grafana Cloud using Grafana Agent or remote_write method.
+
+⸻
+
+Phases
+	•	Phase 1: Discovery & Configuration
+	•	Identify MongoDB clusters managed by Ops Manager.
+	•	Enable and validate Prometheus integration endpoints in Ops Manager for each cluster.
+	•	Phase 2: Automation Scripting
+	•	Build Python/Ansible automation to:
+	•	Discover new clusters via Ops Manager API.
+	•	Fetch Prometheus endpoints per cluster.
+	•	Generate Grafana Agent scrape jobs dynamically.
+	•	Reload or restart agents programmatically.
+	•	Phase 3: Metrics Ingestion
+	•	Push metrics securely to Grafana Cloud using remote_write.
+	•	Validate label cardinality, retention, and scrape frequency.
+	•	Phase 4: Dashboard & Alert Integration
+	•	Preconfigure dashboards using Grafana Cloud templates.
+	•	Implement basic alerting rules for connection counts, memory usage, and replica lag.
+
+⸻
+
+Testability & Feasibility
+	•	Testability:
+	•	Validate successful ingestion of each metric group (memory, connections, replication).
+	•	Confirm metrics appear in Grafana Cloud within expected latency.
+	•	Feasibility:
+	•	Ops Manager supports native Prometheus integration.
+	•	Grafana Agent and Grafana Cloud remote_write already standardized internally.
+
+⸻
+
+Dependencies
+	•	Access to MongoDB Ops Manager with appropriate API keys.
+	•	Grafana Cloud account and API key with Prometheus remote_write endpoint provisioned.
+	•	Network/firewall access from agent to MongoDB exporters and Grafana Cloud.
+
+⸻
+
+Risks & Unknowns
+	•	Risk:
+Clusters not following standard naming/tagging may lead to improper grouping or dashboards.
+	•	Unknowns:
+	•	Differences in Ops Manager versions and endpoint schema.
+	•	Future Ops Manager changes affecting Prometheus integration endpoint structure.
+
+⸻
+
+Technology Partners
+	•	Observability Engineering Team
+	•	DB Engineering (MongoDB Ops Team)
+	•	Platform Infra Team
+	•	Grafana Cloud Support (for onboarding best practices)
+
+⸻
+
+Performance & Nonfunctional Requirements
+	•	Metrics push frequency: 30s to 60s scrape interval.
+	•	Retry mechanism for agent restart or target unavailability.
+	•	Label normalization (e.g., cluster_name, replica_set, host) across environments.
+	•	Ensure no more than 10k active series per cluster to avoid quota violations.
+
+⸻
+
+Acceptance Criteria
+	•	At least one MongoDB cluster metrics visible in Grafana Cloud from Ops Manager.
+	•	Automation successfully fetches targets and updates agent configuration dynamically.
+	•	Dashboard shows metrics like:
+	•	mongodb_connections{}
+	•	mongodb_memory_resident_bytes{}
+	•	mongodb_opcounters_insert{}
+	•	mongodb_repl_lag_seconds{}
+	•	Alert rules configured for CPU, memory, and replication status.
+	•	Documentation and runbook delivered for support team.
