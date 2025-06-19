@@ -1,0 +1,114 @@
+from fastapi import FastAPI
+from pydantic import BaseModel
+from typing import Dict
+from datetime import datetime, timedelta
+import requests
+import os
+from requests.auth import HTTPBasicAuth
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ENV variables
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL")
+PROM_USER = os.getenv("PROM_USER")
+PROM_PASS = os.getenv("PROM_PASS")
+VERIFY_TLS = os.getenv("VERIFY_TLS", "False").lower() == "true"
+PROXIES = {
+    "http": os.getenv("PROXY_HTTP"),
+    "https": os.getenv("PROXY_HTTPS")
+}
+
+app = FastAPI()
+
+# Models
+class MetricRequest(BaseModel):
+    ci_name: str
+    type: str  # "host" or "app"
+
+# Time helpers
+def now_rfc3339():
+    return datetime.utcnow().isoformat("T") + "Z"
+
+def thirty_minutes_ago_rfc3339():
+    return (datetime.utcnow() - timedelta(minutes=30)).isoformat("T") + "Z"
+
+# PromQL builder
+def build_promql_queries(ci_name: str, query_type: str) -> Dict[str, str]:
+    if query_type == "host":
+        return {
+            "cpu_usage": f'host:windows_cpu_utilization:rate5m_percent{{agent_hostname="{ci_name}"}}',
+            "memory_usage": f'host:windows_memory_utilization:ratio_percent{{agent_hostname="{ci_name}"}}',
+            "disk_usage": f'host:windows_disk_used:ratio_percent{{agent_hostname="{ci_name}"}}'
+        }
+
+    elif query_type == "app":
+        return {
+            "cpu_usage": (
+                f'('
+                f'host:windows_cpu_utilization:rate5m_percent * on(agent_hostname) '
+                f'group_left(environment, application_id) '
+                f'server_info{{application_id="{ci_name}"}}'
+                f') or ('
+                f'host:node_cpu_utilization:rate5m_percent * on(agent_hostname) '
+                f'group_left(environment, application_id) '
+                f'server_info{{application_id="{ci_name}"}}'
+                f')'
+            ),
+            "memory_usage": (
+                f'('
+                f'host:windows_memory_utilization:ratio_percent * on(agent_hostname) '
+                f'group_left(environment, application_id) '
+                f'server_info{{application_id="{ci_name}"}}'
+                f') or ('
+                f'host:node_memory_utilization:ratio_percent * on(agent_hostname) '
+                f'group_left(environment, application_id) '
+                f'server_info{{application_id="{ci_name}"}}'
+                f')'
+            ),
+            "disk_usage": (
+                f'('
+                f'host:windows_disk_used:ratio_percent * on(agent_hostname) '
+                f'group_left(environment, application_id) '
+                f'server_info{{application_id="{ci_name}"}}'
+                f') or ('
+                f'host:node_disk_used:ratio_percent * on(agent_hostname) '
+                f'group_left(environment, application_id) '
+                f'server_info{{application_id="{ci_name}"}}'
+                f')'
+            )
+        }
+
+    return {}
+
+# Prometheus call
+def query_range(promql: str) -> dict:
+    try:
+        print(f"\n🚀 Querying Prometheus with:\n{promql}\n")
+
+        response = requests.get(
+            f"{PROMETHEUS_URL}/api/v1/query_range",
+            params={
+                "query": promql,
+                "start": thirty_minutes_ago_rfc3339(),
+                "end": now_rfc3339(),
+                "step": "300"
+            },
+            auth=HTTPBasicAuth(PROM_USER, PROM_PASS),
+            proxies=PROXIES,
+            verify=VERIFY_TLS,
+            timeout=60
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+# Endpoint
+@app.post("/prometheus/v1/metrics")
+async def get_metrics(req: MetricRequest):
+    promqls = build_promql_queries(req.ci_name, req.type)
+    results = {}
+    for metric, query in promqls.items():
+        results[metric] = query_range(query)
+    return {"ci_name": req.ci_name, "metrics": results}
