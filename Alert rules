@@ -1,0 +1,60 @@
+import csv
+import yaml
+
+input_file = "Ping_Monitors_master.csv"
+group_freq_set = set()
+
+# STEP 1: Read CSV and extract unique (group, frequency) pairs
+with open(input_file, newline='') as csvfile:
+    reader = csv.DictReader(csvfile)
+    for row in reader:
+        group = row.get('group', '').strip()
+        freq = row.get('frequency', '').strip()
+        if group and freq.isdigit():
+            group_freq_set.add((group, int(freq)))
+
+# STEP 2: Create one rule group per group, with interval = 2 * freq, and for = 1s
+groups = []
+
+for group, freq in sorted(group_freq_set):
+    group_block = {
+        "name": f"icmp-alerts-{group}",
+        "interval": f"{2 * freq}s",
+        "rules": [
+            {
+                "alert": f"HostDown_{group}",
+                "expr": f'probe_success{{job="icmp", node_group="{group}"}} == 0',
+                "for": "1s",  # 👈 Hardcoded as per request
+                "labels": {
+                    "severity": "critical",
+                    "namespace": "blackbox",
+                    "instance": "{{ $labels.instance }}",
+                    "node": "{{ $labels.node }}",
+                    "node_group": "{{ $labels.node_group }}",
+                    "freq": "{{ $labels.freq }}"
+                },
+                "annotations": {
+                    "summary": "ICMP Ping failed for {{ $labels.instance }}",
+                    "description": f"Host {{ $labels.instance }} (group: {{ $labels.node_group }}) is unreachable via ICMP for 1 second."
+                }
+            }
+        ]
+    }
+    groups.append(group_block)
+
+# STEP 3: Write to YAML file
+output = {
+    "groups": groups
+}
+
+with open("blackbox-monitors.yml", "w") as f:
+    yaml.dump(output, f, sort_keys=False, default_flow_style=False)
+
+print("✅ Generated blackbox-monitors.yml with `for: 1s` and `interval: 2*freq` per group.")
+
+
+
+https://victoriametrics.com/blog/alerting-recording-rules-alertmanager/
+
+
+
